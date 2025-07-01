@@ -1,0 +1,16 @@
+{
+  "name": "Sample Telegram Channel",
+  "type": "channel",
+  "id": 123456789,
+  "messages": [
+    {
+      "id": 1,
+      "type": "message",
+      "date": "2024-01-01T12:00:00Z",
+      "from": "Channel Name",
+      "text": "Sample message content here",
+      "media_type": null,
+      "media_url": null
+    }
+  ]
+} 
