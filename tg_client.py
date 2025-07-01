@@ -19,6 +19,7 @@ TODO: Add message filtering options
 import os
 import json
 import asyncio
+import re
 from typing import List, Dict, Optional
 from pathlib import Path
 from telethon import TelegramClient
@@ -167,7 +168,7 @@ def select_channel(channels: List[Dict]) -> Dict:
             print("❌ Please enter a valid number.")
 
 
-async def download_messages(client: TelegramClient, channel_id: int, limit: int = 50) -> List[Dict]:
+async def download_messages(client: TelegramClient, channel_id: int, limit: int = 1000) -> List[Dict]:
     """
     Download messages from the selected channel.
     
@@ -186,11 +187,25 @@ async def download_messages(client: TelegramClient, channel_id: int, limit: int 
         
         async for message in client.iter_messages(channel_id, limit=limit):
             if message.text:  # Only process text messages for now
+                # Robust sender extraction
+                sender = message.sender
+                if isinstance(sender, User):
+                    sender_name = sender.first_name or ''
+                    if sender.last_name:
+                        sender_name = f"{sender_name} {sender.last_name}"
+                    sender_name = sender_name.strip() or 'User'
+                elif isinstance(sender, Channel):
+                    sender_name = sender.title or 'Channel'
+                elif sender is None:
+                    sender_name = 'Unknown'
+                else:
+                    sender_name = str(type(sender))
+
                 message_data = {
                     'id': message.id,
                     'type': 'message',
                     'date': message.date.isoformat(),
-                    'from': message.sender.first_name if message.sender else 'Unknown',
+                    'from': sender_name,
                     'text': message.text,
                     'media_type': None,
                     'media_url': None
@@ -236,6 +251,15 @@ def save_messages(messages: List[Dict], path: Path) -> None:
         print(f"❌ Error saving messages: {e}")
 
 
+def sanitize_filename(name: str) -> str:
+    """
+    Sanitize a string to be safe for use as a filename.
+    """
+    name = re.sub(r'[^\w\-_\. ]', '_', name)
+    name = name.strip().replace(' ', '_')
+    return name[:50]  # Limit length for safety
+
+
 async def main():
     """
     Main function to run the Telegram client workflow.
@@ -265,13 +289,15 @@ async def main():
             return
         
         # Download messages
-        messages = await download_messages(client, selected_channel['id'])
+        messages = await download_messages(client, selected_channel['id'], limit=1000)
         if not messages:
             print("❌ No messages downloaded")
             return
         
-        # Save to file
-        output_path = Path('examples/raw_dump.json')
+        # Save to file with per-channel filename
+        channel_title = selected_channel.get('title') or f"channel_{selected_channel.get('id', 'unknown')}"
+        safe_title = sanitize_filename(channel_title)
+        output_path = Path(f'examples/raw_dump_{safe_title}.json')
         save_messages(messages, output_path)
         
         print(f"\n🎉 Success! Downloaded {len(messages)} messages from '{selected_channel['title']}'")
