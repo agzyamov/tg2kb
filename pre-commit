@@ -1,0 +1,17 @@
+#!/bin/bash
+# Pre-commit hook for tg2kb project
+# Runs security checks before allowing commits
+
+echo "🔍 Running pre-commit security checks..."
+
+# Run security check script
+python security_check.py
+
+if [ $? -ne 0 ]; then
+    echo "❌ Security check failed! Commit blocked."
+    echo "Please fix the security issues before committing."
+    exit 1
+fi
+
+echo "✅ Security checks passed. Proceeding with commit..."
+exit 0 
