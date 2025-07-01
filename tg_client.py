@@ -17,10 +17,14 @@ TODO: Add message filtering options
 """
 
 import os
+import json
+import asyncio
+import re
 from typing import List, Dict, Optional
 from pathlib import Path
 from telethon import TelegramClient
-from telethon.tl.types import Channel, Chat
+from telethon.tl.types import Channel, Chat, User
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -59,7 +63,7 @@ def get_session_name() -> str:
     return os.getenv('TELEGRAM_SESSION_NAME', 'tg2kb_session')
 
 
-def connect_telethon(api_id: str, api_hash: str) -> TelegramClient:
+async def connect_telethon(api_id: str, api_hash: str) -> Optional[TelegramClient]:
     """
     Establish connection to Telegram using Telethon.
     
@@ -69,21 +73,38 @@ def connect_telethon(api_id: str, api_hash: str) -> TelegramClient:
         
     Returns:
         Connected TelegramClient instance
-        
-    TODO: Initialize TelegramClient with session file
-    TODO: Handle connection errors
-    TODO: Implement session persistence
-    TODO: Add connection timeout handling
-    TODO: Add retry logic for failed connections
     """
-    # TODO: Create TelegramClient instance
-    # TODO: Connect to Telegram
-    # TODO: Handle authentication (phone number, code)
-    # TODO: Save session for future use
-    return None  # Placeholder return
+    session_name = get_session_name()
+    client = TelegramClient(session_name, int(api_id), api_hash)
+    
+    try:
+        await client.connect()
+        
+        # Check if already authorized
+        if not await client.is_user_authorized():
+            print("First time login required. Please follow the prompts:")
+            phone = input("Enter your phone number (with country code, e.g., +1234567890): ")
+            await client.send_code_request(phone)
+            
+            try:
+                code = input("Enter the verification code sent to your phone: ")
+                await client.sign_in(phone, code)
+            except PhoneCodeInvalidError:
+                print("Invalid code. Please try again.")
+                return None
+            except SessionPasswordNeededError:
+                password = input("Enter your 2FA password: ")
+                await client.sign_in(password=password)
+        
+        print("✅ Successfully connected to Telegram!")
+        return client
+        
+    except Exception as e:
+        print(f"❌ Failed to connect to Telegram: {e}")
+        return None
 
 
-def get_user_channels(client: TelegramClient) -> List[Dict]:
+async def get_user_channels(client: TelegramClient) -> List[Dict]:
     """
     Get list of user's joined channels and groups.
     
@@ -92,19 +113,26 @@ def get_user_channels(client: TelegramClient) -> List[Dict]:
         
     Returns:
         List of channel dictionaries with title and ID
-        
-    TODO: Use client.get_dialogs() to fetch chats
-    TODO: Filter for channels only (exclude private chats)
-    TODO: Extract channel title and ID
-    TODO: Handle empty dialog list
-    TODO: Add channel type classification
-    TODO: Add member count information
     """
-    # TODO: Call client.get_dialogs()
-    # TODO: Filter for Channel type entities
-    # TODO: Extract relevant information
-    # TODO: Return structured channel list
-    return []  # Placeholder return
+    channels = []
+    
+    try:
+        async for dialog in client.iter_dialogs():
+            if isinstance(dialog.entity, (Channel, Chat)) and not isinstance(dialog.entity, User):
+                channel_info = {
+                    'id': dialog.entity.id,
+                    'title': dialog.title,
+                    'type': 'channel' if isinstance(dialog.entity, Channel) else 'group',
+                    'participants_count': getattr(dialog.entity, 'participants_count', None)
+                }
+                channels.append(channel_info)
+        
+        print(f"📋 Found {len(channels)} channels/groups")
+        return channels
+        
+    except Exception as e:
+        print(f"❌ Error fetching channels: {e}")
+        return []
 
 
 def select_channel(channels: List[Dict]) -> Dict:
@@ -116,21 +144,31 @@ def select_channel(channels: List[Dict]) -> Dict:
         
     Returns:
         Selected channel dictionary
-        
-    TODO: Display numbered list of channels
-    TODO: Handle user input validation
-    TODO: Add search/filter functionality
-    TODO: Add pagination for large channel lists
-    TODO: Add channel preview information
     """
-    # TODO: Display channel list with numbers
-    # TODO: Get user input
-    # TODO: Validate selection
-    # TODO: Return selected channel
-    return {}  # Placeholder return
+    if not channels:
+        print("❌ No channels found")
+        return {}
+    
+    print("\n📺 Available channels:")
+    for i, channel in enumerate(channels, 1):
+        participants = channel.get('participants_count', 'N/A')
+        print(f"{i:2d}. {channel['title']} ({channel['type']}, {participants} members)")
+    
+    while True:
+        try:
+            choice = input(f"\nSelect a channel (1-{len(channels)}): ")
+            index = int(choice) - 1
+            if 0 <= index < len(channels):
+                selected = channels[index]
+                print(f"✅ Selected: {selected['title']}")
+                return selected
+            else:
+                print("❌ Invalid selection. Please try again.")
+        except ValueError:
+            print("❌ Please enter a valid number.")
 
 
-def download_messages(client: TelegramClient, channel_id: int, limit: int = 5) -> List[Dict]:
+async def download_messages(client: TelegramClient, channel_id: int, limit: int = 1000) -> List[Dict]:
     """
     Download messages from the selected channel.
     
@@ -141,22 +179,45 @@ def download_messages(client: TelegramClient, channel_id: int, limit: int = 5) -
         
     Returns:
         List of message dictionaries
-        
-    TODO: Use client.iter_messages() to fetch messages
-    TODO: Implement pagination for large message counts
-    TODO: Extract message content and metadata
-    TODO: Handle different message types (text, media, etc.)
-    TODO: Add progress reporting
-    TODO: Handle rate limiting
-    TODO: Add message filtering options
     """
-    # TODO: Get channel entity
-    # TODO: Iterate through messages
-    # TODO: Extract message data
-    # TODO: Handle media messages
-    # TODO: Add progress tracking
-    # TODO: Return structured message list
-    return []  # Placeholder return
+    messages = []
+    
+    try:
+        print(f"📥 Downloading up to {limit} messages...")
+        
+        async for message in client.iter_messages(channel_id, limit=limit):
+            if message.text:  # Only process text messages for now
+                # Robust sender extraction
+                sender = message.sender
+                if isinstance(sender, User):
+                    sender_name = sender.first_name or ''
+                    if sender.last_name:
+                        sender_name = f"{sender_name} {sender.last_name}"
+                    sender_name = sender_name.strip() or 'User'
+                elif isinstance(sender, Channel):
+                    sender_name = sender.title or 'Channel'
+                elif sender is None:
+                    sender_name = 'Unknown'
+                else:
+                    sender_name = str(type(sender))
+
+                message_data = {
+                    'id': message.id,
+                    'type': 'message',
+                    'date': message.date.isoformat(),
+                    'from': sender_name,
+                    'text': message.text,
+                    'media_type': None,
+                    'media_url': None
+                }
+                messages.append(message_data)
+        
+        print(f"✅ Downloaded {len(messages)} messages")
+        return messages
+        
+    except Exception as e:
+        print(f"❌ Error downloading messages: {e}")
+        return []
 
 
 def save_messages(messages: List[Dict], path: Path) -> None:
@@ -166,45 +227,92 @@ def save_messages(messages: List[Dict], path: Path) -> None:
     Args:
         messages: List of message dictionaries
         path: Path to save the JSON file
-        
-    TODO: Convert messages to JSON-serializable format
-    TODO: Handle datetime serialization
-    TODO: Add metadata to the export
-    TODO: Implement pretty printing
-    TODO: Add compression options
-    TODO: Handle file write errors
     """
-    # TODO: Prepare messages for JSON serialization
-    # TODO: Add export metadata
-    # TODO: Write to file with proper encoding
-    # TODO: Handle serialization errors
-    pass
+    try:
+        # Ensure directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Prepare export data
+        export_data = {
+            'name': 'Telegram Channel Export',
+            'type': 'channel',
+            'export_date': '2024-01-01T00:00:00Z',  # TODO: Use actual date
+            'message_count': len(messages),
+            'messages': messages
+        }
+        
+        # Write to file
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(export_data, f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ Messages saved to {path}")
+        
+    except Exception as e:
+        print(f"❌ Error saving messages: {e}")
 
 
-def main():
+def sanitize_filename(name: str) -> str:
+    """
+    Sanitize a string to be safe for use as a filename.
+    """
+    name = re.sub(r'[^\w\-_\. ]', '_', name)
+    name = name.strip().replace(' ', '_')
+    return name[:50]  # Limit length for safety
+
+
+async def main():
     """
     Main function to run the Telegram client workflow.
-    
-    TODO: Parse command line arguments
-    TODO: Load API credentials
-    TODO: Connect to Telegram
-    TODO: List and select channel
-    TODO: Download messages
-    TODO: Save to examples/raw_dump.json
-    TODO: Display statistics
     """
-    # TODO: Get API credentials from environment or config
-    # TODO: Connect to Telegram
-    # TODO: Get user channels
-    # TODO: Let user select channel
-    # TODO: Download messages
-    # TODO: Save to file
-    # TODO: Display results
-    pass
+    client = None
+    try:
+        print("🚀 Starting Telegram client...")
+        
+        # Get API credentials
+        api_id, api_hash = get_telegram_credentials()
+        print("✅ Credentials loaded")
+        
+        # Connect to Telegram
+        client = await connect_telethon(api_id, api_hash)
+        if not client:
+            return
+        
+        # Get user channels
+        channels = await get_user_channels(client)
+        if not channels:
+            print("❌ No channels found or error occurred")
+            return
+        
+        # Let user select channel
+        selected_channel = select_channel(channels)
+        if not selected_channel:
+            return
+        
+        # Download messages
+        messages = await download_messages(client, selected_channel['id'], limit=1000)
+        if not messages:
+            print("❌ No messages downloaded")
+            return
+        
+        # Save to file with per-channel filename
+        channel_title = selected_channel.get('title') or f"channel_{selected_channel.get('id', 'unknown')}"
+        safe_title = sanitize_filename(channel_title)
+        output_path = Path(f'examples/raw_dump_{safe_title}.json')
+        save_messages(messages, output_path)
+        
+        print(f"\n🎉 Success! Downloaded {len(messages)} messages from '{selected_channel['title']}'")
+        print(f"📁 Output saved to: {output_path}")
+        
+    except Exception as e:
+        print(f"❌ Error in main workflow: {e}")
+    finally:
+        # Disconnect client
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass  # Ignore disconnect errors
 
 
 if __name__ == "__main__":
-    # TODO: Run main function
-    # TODO: Handle exceptions
-    # TODO: Add logging
-    pass 
+    asyncio.run(main()) 

@@ -46,8 +46,14 @@ ENV/
 Thumbs.db
 
 # Output files
-outputs/notes/*
+-outputs/notes/*
 !outputs/notes/.gitkeep
 
+# Ignore the entire outputs folder
+outputs/
+
 # Downloaded dumps
-examples/raw_dump.json 
+-examples/raw_dump.json
+
+# Ignore the entire examples folder
+examples/ 
